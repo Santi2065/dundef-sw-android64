@@ -1,0 +1,8 @@
+# game files and build outputs: never commit these
+*.apk
+*.idsig
+*.keystore
+*.jks
+build/
+port/build-*/
+port/third_party/boost_*/

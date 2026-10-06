@@ -1,0 +1,3 @@
+[submodule "port/third_party/dynarmic"]
+	path = port/third_party/dynarmic
+	url = https://github.com/azahar-emu/dynarmic
