@@ -62,10 +62,57 @@ Mali and PowerVR GPUs are untested; reports are welcome.
 The Java/smali patches are applied by `build.sh` with plain `sed`/`perl`. Each is commented
 and checked.
 
-## Building
+## Step by step
 
-Linux (or WSL) with: JDK 17+, [apktool](https://apktool.org) in `PATH`, Android SDK
-build-tools, **Android NDK r28**, `cmake`, `ninja`, `git`, `curl`, `perl`.
+Building runs on **Linux** (tested on Fedora). It should also work under WSL2 on Windows, but
+that is untested. macOS is not supported (the script uses GNU `sed`).
+
+### 1. Get your copy of the APK
+
+The game was delisted from Google Play years ago, so you need the APK you already own. If it is
+still installed on an old phone or tablet, enable USB debugging there and run:
+
+```bash
+adb shell pm path com.trendy.ddapp      # prints e.g. package:/data/app/com.trendy.ddapp-1.apk
+adb pull /data/app/com.trendy.ddapp-1.apk com.trendy-7.6.apk   # use the path printed above
+```
+
+A backup made with a backup app or file manager works too. The patches were written for
+version 7.6, SHA-256 `821d019fd43bcc71befcc2a91da31809f375b8ec811155f3540abab2c27ea1b6`.
+`build.sh` warns if yours differs and carries on anyway.
+
+### 2. Install the tools (once)
+
+```bash
+# Debian / Ubuntu
+sudo apt install openjdk-17-jdk git curl perl cmake ninja-build unzip
+# Fedora
+sudo dnf install java-17-openjdk-devel git curl perl cmake ninja-build unzip
+```
+
+**Android SDK build-tools and NDK r28.** If you don't use Android Studio, download the
+"Command line tools only" zip from <https://developer.android.com/studio#command-line-tools-only>, then:
+
+```bash
+mkdir -p ~/Android/Sdk/cmdline-tools
+unzip commandlinetools-linux-*_latest.zip -d ~/Android/Sdk/cmdline-tools
+mv ~/Android/Sdk/cmdline-tools/cmdline-tools ~/Android/Sdk/cmdline-tools/latest
+yes | ~/Android/Sdk/cmdline-tools/latest/bin/sdkmanager --licenses
+~/Android/Sdk/cmdline-tools/latest/bin/sdkmanager "build-tools;35.0.0" "ndk;28.2.13676358" "platform-tools"
+```
+
+**apktool** (<https://apktool.org>), installed into `~/.local/bin`, which must be in your `PATH`:
+
+```bash
+mkdir -p ~/.local/bin
+curl -Lo ~/.local/bin/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar
+printf '#!/bin/sh\nexec java -jar "$(dirname "$0")/apktool.jar" "$@"\n' > ~/.local/bin/apktool
+chmod +x ~/.local/bin/apktool
+```
+
+### 3. Build
+
+Clone with `git`. GitHub's "Download ZIP" leaves out the dynarmic submodule and the build fails.
 
 ```bash
 git clone https://github.com/Santi2065/dundef-sw-android64
@@ -73,24 +120,29 @@ cd dundef-sw-android64
 ./build.sh /path/to/com.trendy-7.6.apk
 ```
 
-The first run fetches dynarmic (git submodule) and the Boost headers it needs. The result is
-`DunDefSW-64.apk`, signed with a key generated on first build (`dundef.keystore`). Keep that
-file: updates must be signed with the same key to install over the existing app. The script
-warns if your APK is not the exact one these patches were written for
-(SHA-256 `821d019fd43bcc71befcc2a91da31809f375b8ec811155f3540abab2c27ea1b6`).
+The first build downloads dynarmic and the Boost headers (about 150 MB) and takes a few minutes.
+Later builds take seconds. The result is **`DunDefSW-64.apk`**.
 
-Set `ABIS="arm64-v8a x86_64"` to also build for x86_64 emulators. Use `NDK=`, `BUILD_TOOLS=`
-or `ANDROID_HOME=` if your SDK is not under `~/Android/Sdk`.
+The first build also creates `dundef.keystore`, the key the APK is signed with. **Keep it.**
+Android only installs an update over the existing app if it is signed with the same key. With a
+different key you would have to uninstall first, which deletes the game data and your saves.
 
-## Installing and first run
+Options: `ABIS="arm64-v8a x86_64"` also builds for x86_64 emulators. Set `ANDROID_HOME=`, `NDK=`
+or `BUILD_TOOLS=` if your SDK is not under `~/Android/Sdk`.
 
-1. Uninstall the original game if it is installed (different signature).
-2. Sideload `DunDefSW-64.apk`.
-3. On first launch the game downloads about 860 MB of data over Wi-Fi into
-   `Android/data/com.trendy.ddapp/files/DunDef`. Consider backing that folder up: the game
-   depends on NVIDIA keeping the files online.
+### 4. Install on your device
 
-Uninstalling the app deletes the downloaded data and your saves.
+1. If the original game is still installed on that device, uninstall it first (it is signed
+   with a different key).
+2. Copy `DunDefSW-64.apk` to the device and open it from a file manager, allowing "install
+   unknown apps" when asked. Alternatively, with USB debugging on, run
+   `adb install DunDefSW-64.apk`.
+3. On first launch, accept the download. The game fetches about 860 MB over Wi-Fi into
+   `Android/data/com.trendy.ddapp/files/DunDef`. Consider copying that folder to a computer
+   afterwards: the game depends on NVIDIA keeping the files online.
+
+To update later, rebuild and install the new APK over the old one. Your data and saves stay.
+Uninstalling the app deletes both.
 
 ## Multiplayer
 
