@@ -41,11 +41,14 @@ SMALI=$S/smali/com/trendy/ddapp
 
 # --- manifest: targetSdk 28 is the lowest that Android 14+ runs without the "built for an older
 # version" warning; nothing in the Java side changes behaviour up to there.
+# The HUD is anchored for ~3:2 screens: on squarer ones (e.g. 7:5 tablets) BUILD/HERO fall off the
+# right edge. minAspectRatio makes Android 10+ letterbox the window to 1.48 (tested: 1.5+ and 16:10
+# clip the bottom row instead), keeping touch, keyboard and video coordinates consistent.
 sed -i -e 's/targetSdkVersion: .*/targetSdkVersion: 28/' -e 's/minSdkVersion: .*/minSdkVersion: 24/' "$S/apktool.yml"  # loader is built for API 24
 sed -i \
   -e 's#<application #<application android:extractNativeLibs="true" android:resizeableActivity="false" #' \
   -e 's#android:configChanges="[^"]*"#android:configChanges="locale|keyboard|keyboardHidden|navigation|orientation|screenLayout|screenSize|smallestScreenSize|uiMode|density"#' \
-  -e 's#<activity #<activity android:resizeableActivity="false" #' \
+  -e 's#<activity #<activity android:resizeableActivity="false" android:minAspectRatio="1.48" #' \
   -e 's#</application>#<uses-library android:name="org.apache.http.legacy" android:required="false"/><meta-data android:name="android.max_aspect" android:value="2.4"/></application>#' \
   "$S/AndroidManifest.xml"
 
