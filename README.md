@@ -34,7 +34,7 @@ Mali and PowerVR GPUs are untested; reports are welcome.
 | Phones drop Wi-Fi broadcast packets, so LAN games are hard to find | The app holds a `MulticastLock` |
 | On touch keyboards, Enter typed a newline into hero/game names, and closing the keyboard discarded the text | Single-line field with a "Done" key; Done or closing the keyboard keeps the name |
 | The 48 px legacy icon shows up small on a white plate | Adaptive icon built from the game's own 170 px artwork |
-| On squarer screens (e.g. 7:5 tablets like the OnePlus Pad 3) the right edge of the HUD (BUILD, HERO, defense list) is cut off | The window is letterboxed to 1.48:1 (`minAspectRatio`), the widest ratio whose HUD fits; thin black bars top and bottom |
+| On tablets (7" or more, the game's own test) the HUD only fits near 3:2: at 7:5 (e.g. OnePlus Pad 3) BUILD/HERO fall off the right edge, at 16:10 the bottom row is cut too | On tablets the window is sized to 1.48:1 and centered, with black bars top/bottom or left/right. Phones keep the full screen; their HUD fits (checked at 20:9) |
 
 ## How the loader works
 
