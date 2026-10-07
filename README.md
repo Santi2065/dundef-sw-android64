@@ -162,7 +162,6 @@ Uninstalling the app deletes both.
 
 ## Known issues
 
-- The tutorial level renders softer than other scenes; the cause is not known yet.
 - In the Options menu the "Chase Camera" label is slightly clipped on the right (cosmetic).
 - The Back button opens the game's own quit prompt (original behavior).
 
