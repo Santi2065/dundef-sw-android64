@@ -4,7 +4,9 @@
 //  - Java calls the guest's native methods through host trampolines registered with ART.
 #include <dlfcn.h>
 #include <jni.h>
+#include <sys/system_properties.h>
 
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -585,6 +587,37 @@ bool register_guest_native(JNIEnv* e, jclass cls, const char* name, const char* 
     return false;
 }
 
+// On phones wider than 16:9 (18:9 to 21:9) the engine's UIResolutionContainer scales the 16:9 phone
+// HUD by height and places it by a per-container alignment byte: 0 = left (stock), 1 = centered,
+// 2 = right. Stock left-alignment strands BUILD/HERO mid-screen, so phones get it centered.
+// Tablets keep stock: their HUD relies on it (centering pushes BUILD/HERO off the right edge).
+// "Phone" is the game's own test: a diagonal under 7 inches.
+// Testing aid: adb shell setprop debug.ddport.hudalign 0|1|2 (forces the mode on any device)
+static bool is_phone(JNIEnv* e) {
+    jclass res = e->FindClass("android/content/res/Resources");
+    jobject sys = e->CallStaticObjectMethod(res, e->GetStaticMethodID(res, "getSystem", "()Landroid/content/res/Resources;"));
+    jobject dm = e->CallObjectMethod(sys, e->GetMethodID(res, "getDisplayMetrics", "()Landroid/util/DisplayMetrics;"));
+    jclass c = e->GetObjectClass(dm);
+    float w = e->GetIntField(dm, e->GetFieldID(c, "widthPixels", "I")) / e->GetFloatField(dm, e->GetFieldID(c, "xdpi", "F"));
+    float h = e->GetIntField(dm, e->GetFieldID(c, "heightPixels", "I")) / e->GetFloatField(dm, e->GetFieldID(c, "ydpi", "F"));
+    LOGI("screen diagonal %.1f in", std::sqrt(w * w + h * h));
+    return w * w + h * h < 49.f;
+}
+
+static void patch_hud_alignment(JNIEnv* e) {
+    constexpr u32 kSite = 0xe85634;  // UUIResolutionContainer::UpdateCurrentFitting: ldrb r3, [r7, r3]
+    char v[PROP_VALUE_MAX] = "";
+    __system_property_get("debug.ddport.hudalign", v);
+    int mode = (v[0] >= '0' && v[0] <= '2') ? v[0] - '0' : is_phone(e) ? 1 : -1;
+    auto* site = mem::h<u16>(g_lib.base + kSite);
+    if (mode < 0) return;
+    if (*site != 0x5cfb) {
+        LOGW("hud align: unexpected code, not patched");
+        return;
+    }
+    *site = 0x2300 | mode;  // movs r3, #mode
+}
+
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
     env();
@@ -603,6 +636,7 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     path = path.substr(0, path.rfind('/') + 1) + "libDunDefGuest.so";
     g_lib = load_guest(path.c_str());
     run_guest_constructors(g_lib);
+    patch_hud_alignment(env());
 
     u32 onload = g_lib.sym("JNI_OnLoad");
     if (!onload) fatal("guest has no JNI_OnLoad");

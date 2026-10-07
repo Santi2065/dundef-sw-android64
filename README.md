@@ -34,7 +34,8 @@ Mali and PowerVR GPUs are untested; reports are welcome.
 | Phones drop Wi-Fi broadcast packets, so LAN games are hard to find | The app holds a `MulticastLock` |
 | On touch keyboards, Enter typed a newline into hero/game names, and closing the keyboard discarded the text | Single-line field with a "Done" key; Done or closing the keyboard keeps the name |
 | The 48 px legacy icon shows up small on a white plate | Adaptive icon built from the game's own 170 px artwork |
-| On tablets (7" or more, the game's own test) the HUD only fits near 3:2: at 7:5 (e.g. OnePlus Pad 3) BUILD/HERO fall off the right edge, at 16:10 the bottom row is cut too | On tablets the window is sized to 1.48:1 and centered, with black bars top/bottom or left/right. Phones keep the full screen; their HUD fits (checked at 20:9) |
+| On tablets (7" or more, the game's own test) the HUD only fits near 3:2: at 7:5 (e.g. OnePlus Pad 3) BUILD/HERO fall off the right edge, at 16:10 the bottom row is cut too | On tablets the window is sized to 1.48:1 and centered, with black bars top/bottom or left/right. |
+| On phones wider than 16:9 (18:9 to 21:9) the phone HUD is left-aligned: BUILD/HERO and the action buttons sit mid-screen instead of at the right edge | The loader patches the engine's layout code to center the HUD; the scene stays full screen |
 
 ## How the loader works
 
@@ -164,6 +165,7 @@ Uninstalling the app deletes both.
 ```bash
 adb logcat -s ddport                        # loader messages + a "perf:" fps line every 5 s
 adb shell setprop debug.ddport.novsync 1    # disable vsync to measure uncapped fps
+adb shell setprop debug.ddport.hudalign 0   # wide-phone HUD: 0 = left (stock), 1 = centered (default), 2 = right
 ```
 
 ## Legal
