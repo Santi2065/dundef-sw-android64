@@ -22,6 +22,7 @@ add_library(DunDef-Android SHARED
     src/jni.cpp
     third_party/dlmalloc/dlmalloc.c)
 target_compile_options(DunDef-Android PRIVATE -O2 -Wall -Wno-unused-parameter)
+target_include_directories(DunDef-Android PRIVATE ${Boost_INCLUDE_DIR})  # dynarmic IR headers (profiler)
 set_source_files_properties(third_party/dlmalloc/dlmalloc.c PROPERTIES COMPILE_OPTIONS "-w")
-target_link_libraries(DunDef-Android PRIVATE dynarmic log GLESv2 EGL dl z)
+target_link_libraries(DunDef-Android PRIVATE dynarmic merry::mcl log GLESv2 EGL dl z)
 target_link_options(DunDef-Android PRIVATE -Wl,-z,max-page-size=16384 -Wl,--exclude-libs,ALL)

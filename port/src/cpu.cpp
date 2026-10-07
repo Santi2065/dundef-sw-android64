@@ -1,8 +1,11 @@
+#include <cxxabi.h>
+#include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/interface/A32/a32.h>
 #include <dynarmic/interface/A32/config.h>
 #include <pthread.h>
 #include <time.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <map>
@@ -15,6 +18,8 @@
 
 extern GuestLib g_lib;
 extern std::atomic<u64> g_svc_count;
+extern bool g_profile;
+extern std::atomic<u32> g_svc_hist[];
 
 // ---------------------------------------------------------------- thunks
 namespace {
@@ -26,6 +31,7 @@ struct Thunk {
     Handler h;
     const char* name;
     bool reenters;  // may call back into the guest: must run outside Jit::Run
+    bool hook;      // replaces a guest function in place: return straight to LR
 };
 std::vector<Thunk> thunks;
 u32 thunk_area = 0, ret_stub = 0;
@@ -48,11 +54,25 @@ u32 make_thunk(Handler h, const char* name, bool reenters) {
     init_thunks();
     u32 id = thunks.size();
     if (id >= kMaxThunks) fatal("out of thunks");
-    thunks.push_back({h, name ? strdup(name) : "?", reenters});
+    thunks.push_back({h, name ? strdup(name) : "?", reenters, false});
     u32 a = thunk_area + id * 8;
     mem::wr32(a, 0xEF000000 | id);  // svc #id
     mem::wr32(a + 4, 0xE12FFF1E);    // bx lr
     return a;
+}
+
+// Overwrites the first instruction of an ARM-mode guest function with "svc #id". dynarmic stores
+// PC+4 before calling the SVC handler and reloads PC from state afterwards, so the handler can
+// return to LR directly: one word is patched, so functions that fall through into each other
+// (libgcc's fsub -> fadd) can each be hooked.
+void hook_guest(u32 addr, Handler h, const char* name) {
+    if (addr & 3) fatal("hook %s: not an ARM-mode function (%08x)", name, addr);
+    std::lock_guard lk(thunk_lock);
+    init_thunks();
+    u32 id = thunks.size();
+    if (id >= kMaxThunks) fatal("out of thunks");
+    thunks.push_back({h, name, false, true});
+    mem::wr32(addr, 0xEF000000 | id);  // svc #id
 }
 
 void register_import(const char* name, Handler h) { imports[name] = h; }
@@ -126,13 +146,21 @@ struct GuestThread final : Dynarmic::A32::UserCallbacks {
         const Thunk& t = thunks[swi];
         if (!t.h) fatal("guest called unimplemented %s (lr=%08x)", t.name, jit->Regs()[14]);
         g_svc_count.fetch_add(1, std::memory_order_relaxed);
+        if (g_profile) g_svc_hist[swi].fetch_add(1, std::memory_order_relaxed);
         Ctx c{jit->Regs()};
         t.h(c);
-        mem::wr32(errno_addr, errno);
+        if (t.hook) {
+            u32 lr = c.r[14];
+            c.r[15] = lr & ~1u;
+            jit->SetCpsr((jit->Cpsr() & ~0x20u) | ((lr & 1) << 5));  // Thumb callers come back in Thumb
+        } else {
+            mem::wr32(errno_addr, errno);
+        }
     }
     void ExceptionRaised(u32 pc, Dynarmic::A32::Exception e) override {
         fatal("guest exception %d at pc=%08x lr=%08x", static_cast<int>(e), pc, jit->Regs()[14]);
     }
+    void PreCodeTranslationHook(bool, u32 pc, Dynarmic::A32::IREmitter& ir) override;
     void AddTicks(u64) override {}
     u64 GetTicksRemaining() override { return 0; }
 
@@ -150,6 +178,15 @@ struct GuestThread final : Dynarmic::A32::UserCallbacks {
 std::atomic<u32> next_tid{1};
 }  // namespace
 std::atomic<u64> g_svc_count{0};
+bool g_profile;  // adb shell setprop debug.ddport.profile 1: log the busiest imports/hooks
+std::atomic<u32> g_svc_hist[kMaxThunks];
+void log_svc_top() {
+    std::vector<std::pair<u32, u32>> v;
+    for (u32 i = 0; i < thunks.size(); i++)
+        if (u32 n = g_svc_hist[i].exchange(0)) v.push_back({n, i});
+    std::sort(v.rbegin(), v.rend());
+    for (size_t i = 0; i < v.size() && i < 15; i++) LOGI("  %9u %s", v[i].first, thunks[v[i].second].name);
+}
 namespace {
 thread_local std::unique_ptr<GuestThread> tls_thread;
 thread_local u32 tls_preassigned_tid = 0;
@@ -164,6 +201,7 @@ GuestThread& cur() {
 }  // namespace
 
 u32 guest_errno_addr() { return cur().errno_addr; }
+void invalidate_guest_code(u32 addr, u32 len) { cur().jit->InvalidateCacheRange(addr, len); }
 u32 guest_thread_id() { return cur().tid; }
 
 u64 call_guest(u32 fn, const u32* args, size_t nargs) {
@@ -365,4 +403,66 @@ void init_pthread() {
     register_import("__atomic_swap", [](Ctx& c) { c.ret(mem::h<std::atomic<s32>>(c.arg(1))->exchange(c.arg(0))); });
     register_import("__atomic_inc", [](Ctx& c) { c.ret(mem::h<std::atomic<s32>>(c.arg(0))->fetch_add(1)); });
     register_import("__atomic_dec", [](Ctx& c) { c.ret(mem::h<std::atomic<s32>>(c.arg(0))->fetch_sub(1)); });
+}
+
+// ---------------------------------------------------------------- guest profiler
+// Every translated guest instruction gets a counter increment prepended (2 memory ops), so this
+// is slow and only for finding hot spots: counts are summed per function every 5 s.
+namespace {
+u32 prof_lo, prof_hi, prof_counters;  // guest code range and one u32 counter per halfword
+struct ProfFn {
+    u32 lo, hi;
+    std::string name;
+};
+std::vector<ProfFn> prof_fns;
+}  // namespace
+
+void GuestThread::PreCodeTranslationHook(bool, u32 pc, Dynarmic::A32::IREmitter& ir) {
+    if (!prof_counters || pc < prof_lo || pc >= prof_hi) return;
+    auto slot = ir.Imm32(prof_counters + ((pc - prof_lo) >> 1) * 4);
+    auto n = ir.ReadMemory32(slot, Dynarmic::IR::AccType::NORMAL);
+    ir.WriteMemory32(slot, Dynarmic::IR::U32{ir.Add(n, ir.Imm32(1))}, Dynarmic::IR::AccType::NORMAL);
+}
+
+void guest_profile_init(const GuestLib& lib) {
+    struct Sym { u32 name, value, size; u8 info, other; u16 shndx; };
+    auto* syms = mem::h<Sym>(lib.symtab);
+    for (u32 i = 1; i < lib.nsyms; i++) {
+        if ((syms[i].info & 0xf) != 2 || !syms[i].size || !syms[i].shndx) continue;  // STT_FUNC
+        const char* raw = mem::h<char>(lib.strtab + syms[i].name);
+        int st;
+        char* dem = abi::__cxa_demangle(raw, nullptr, nullptr, &st);
+        u32 lo = lib.base + (syms[i].value & ~1u);
+        prof_fns.push_back({lo, lo + syms[i].size, dem ? dem : raw});
+        free(dem);
+    }
+    std::sort(prof_fns.begin(), prof_fns.end(), [](auto& a, auto& b) { return a.lo < b.lo; });
+    prof_lo = lib.base;
+    prof_hi = lib.code_end;
+    prof_counters = mem::g(mem::calloc((prof_hi - prof_lo) / 2, 4));
+    LOGI("guest profiler on: %zu functions", prof_fns.size());
+}
+
+void log_guest_top() {
+    if (!prof_counters) return;
+    auto* c = mem::h<u32>(prof_counters);
+    std::vector<std::pair<u64, size_t>> per_fn;
+    u64 total = 0;
+    size_t f = 0;
+    for (u32 i = 0, n = (prof_hi - prof_lo) / 2; i < n; i++) {
+        u32 v = c[i];
+        if (!v) continue;
+        c[i] = 0;
+        total += v;
+        u32 pc = prof_lo + i * 2;
+        while (f < prof_fns.size() && prof_fns[f].hi <= pc) f++;
+        if (f < prof_fns.size() && prof_fns[f].lo <= pc) {
+            if (per_fn.empty() || per_fn.back().second != f) per_fn.push_back({0, f});
+            per_fn.back().first += v;
+        }
+    }
+    std::sort(per_fn.rbegin(), per_fn.rend());
+    LOGI("guest: %llu instructions in 5 s", (unsigned long long)total);
+    for (size_t i = 0; i < per_fn.size() && i < 25; i++)
+        LOGI("  %5.2f%% %.150s", 100.0 * per_fn[i].first / total, prof_fns[per_fn[i].second].name.c_str());
 }

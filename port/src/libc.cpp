@@ -3,6 +3,9 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <math.h>
+#include <sys/system_properties.h>
+
+#include <cmath>
 #include <netdb.h>
 #include <sched.h>
 #include <stdio.h>
@@ -19,6 +22,8 @@
 #include <zlib.h>
 
 #include <cerrno>
+#include <string>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 
@@ -739,4 +744,405 @@ void init_libc() {
             a = next;
         }
     });
+}
+
+// ---------------------------------------------------------------- soft-float / division helpers
+// The game is built for armeabi without an FPU: every float/double operation and every integer
+// division is a call into libgcc routines statically linked into the guest, which run as hundreds
+// of emulated integer instructions each. These hooks replace them with single host instructions.
+// Results follow libgcc: IEEE round-to-nearest, NaN compares false, saturating float->int with
+// NaN -> 0, division by zero -> 0.
+namespace {
+inline float f32(u32 b) { float x; memcpy(&x, &b, 4); return x; }
+inline u32 bits(float x) { u32 b; memcpy(&b, &x, 4); return b; }
+inline double f64(u32 lo, u32 hi) { u64 b = lo | (u64(hi) << 32); double x; memcpy(&x, &b, 8); return x; }
+inline u64 bits(double x) { u64 b; memcpy(&b, &x, 8); return b; }
+inline u64 w64(u32 lo, u32 hi) { return lo | (u64(hi) << 32); }
+
+template <class T> s32 to_s32(T x) {
+    if (x != x) return 0;
+    if (x >= T(2147483648.0)) return INT32_MAX;
+    if (x <= T(-2147483648.0)) return INT32_MIN;
+    return static_cast<s32>(x);
+}
+template <class T> u32 to_u32(T x) {
+    if (!(x > T(0))) return 0;  // also NaN
+    if (x >= T(4294967296.0)) return UINT32_MAX;
+    return static_cast<u32>(x);
+}
+
+#define F(name, ...) {name, [](Ctx& c) { auto& r = c.r; (void)r; __VA_ARGS__; }}
+const std::pair<const char*, Handler> kSoftFp[] = {
+    F("__aeabi_l2f", c.ret(bits(static_cast<float>(static_cast<int64_t>(w64(r[0], r[1])))))),
+    F("__aeabi_ul2f", c.ret(bits(static_cast<float>(w64(r[0], r[1]))))),
+    F("__aeabi_l2d", c.ret64(bits(static_cast<double>(static_cast<int64_t>(w64(r[0], r[1])))))),
+    F("__aeabi_ul2d", c.ret64(bits(static_cast<double>(w64(r[0], r[1]))))),
+    F("__aeabi_uldivmod", {
+        u64 a = w64(r[0], r[1]), b = w64(r[2], r[3]);
+        u64 q = b ? a / b : 0, m = b ? a % b : a;
+        r[0] = u32(q); r[1] = u32(q >> 32); r[2] = u32(m); r[3] = u32(m >> 32);
+    }),
+    F("__aeabi_ldivmod", {
+        int64_t a = w64(r[0], r[1]), b = w64(r[2], r[3]);
+        bool ovf = a == INT64_MIN && b == -1;
+        int64_t q = !b ? 0 : ovf ? a : a / b, m = !b ? a : ovf ? 0 : a % b;
+        r[0] = u32(q); r[1] = u32(u64(q) >> 32); r[2] = u32(m); r[3] = u32(u64(m) >> 32);
+    }),
+};
+#undef F
+
+// Everything else is replaced in guest code: the function's first word becomes a branch to a few
+// ARM VFP / IDIV instructions, which dynarmic compiles straight to host float/div instructions with
+// no exit from the JIT (an SVC round trip costs more than these operations themselves).
+// Generated with the NDK assembler (clang --target=armv7a, +vfpv3 +idiv); disassembly alongside.
+struct VfpStub {
+    const char* name;
+    std::vector<u32> code;
+};
+const VfpStub kVfpStubs[] = {
+    {"__aeabi_fadd", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xee300a20,  // vadd.f32 s0, s0, s1
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fsub", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xee300a60,  // vsub.f32 s0, s0, s1
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_frsub", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xee300ac0,  // vsub.f32 s0, s1, s0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fmul", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xee200a20,  // vmul.f32 s0, s0, s1
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fdiv", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xee800a20,  // vdiv.f32 s0, s0, s1
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dadd", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xee300b01,  // vadd.f64 d0, d0, d1
+        0xec510b10,  // vmov r0, r1, d0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dsub", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xee300b41,  // vsub.f64 d0, d0, d1
+        0xec510b10,  // vmov r0, r1, d0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_drsub", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xee310b40,  // vsub.f64 d0, d1, d0
+        0xec510b10,  // vmov r0, r1, d0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dmul", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xee200b01,  // vmul.f64 d0, d0, d1
+        0xec510b10,  // vmov r0, r1, d0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_ddiv", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xee800b01,  // vdiv.f64 d0, d0, d1
+        0xec510b10,  // vmov r0, r1, d0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fcmpeq", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xeeb40a60,  // vcmp.f32 s0, s1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x03a00001,  // moveq r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fcmplt", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xeeb40a60,  // vcmp.f32 s0, s1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x43a00001,  // movmi r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fcmple", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xeeb40a60,  // vcmp.f32 s0, s1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x93a00001,  // movls r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fcmpge", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xeeb40a60,  // vcmp.f32 s0, s1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0xa3a00001,  // movge r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fcmpgt", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xeeb40a60,  // vcmp.f32 s0, s1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0xc3a00001,  // movgt r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_fcmpun", {
+        0xee000a10,  // vmov s0, r0
+        0xee001a90,  // vmov s1, r1
+        0xeeb40a60,  // vcmp.f32 s0, s1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x63a00001,  // movvs r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dcmpeq", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xeeb40b41,  // vcmp.f64 d0, d1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x03a00001,  // moveq r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dcmplt", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xeeb40b41,  // vcmp.f64 d0, d1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x43a00001,  // movmi r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dcmple", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xeeb40b41,  // vcmp.f64 d0, d1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0x93a00001,  // movls r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dcmpge", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xeeb40b41,  // vcmp.f64 d0, d1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0xa3a00001,  // movge r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_dcmpgt", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xec432b11,  // vmov d1, r2, r3
+        0xeeb40b41,  // vcmp.f64 d0, d1
+        0xeef1fa10,  // vmrs APSR_nzcv, fpscr
+        0xe3a00000,  // mov r0, #0
+        0xc3a00001,  // movgt r0, #1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_f2iz", {
+        0xee000a10,  // vmov s0, r0
+        0xeebd0ac0,  // vcvt.s32.f32 s0, s0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_f2uiz", {
+        0xee000a10,  // vmov s0, r0
+        0xeebc0ac0,  // vcvt.u32.f32 s0, s0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_i2f", {
+        0xee000a10,  // vmov s0, r0
+        0xeeb80ac0,  // vcvt.f32.s32 s0, s0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_ui2f", {
+        0xee000a10,  // vmov s0, r0
+        0xeeb80a40,  // vcvt.f32.u32 s0, s0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_f2d", {
+        0xee000a10,  // vmov s0, r0
+        0xeeb71ac0,  // vcvt.f64.f32 d1, s0
+        0xec510b11,  // vmov r0, r1, d1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_d2f", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xeeb70bc0,  // vcvt.f32.f64 s0, d0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_d2iz", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xeebd0bc0,  // vcvt.s32.f64 s0, d0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_d2uiz", {
+        0xec410b10,  // vmov d0, r0, r1
+        0xeebc0bc0,  // vcvt.u32.f64 s0, d0
+        0xee100a10,  // vmov r0, s0
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_i2d", {
+        0xee000a10,  // vmov s0, r0
+        0xeeb81bc0,  // vcvt.f64.s32 d1, s0
+        0xec510b11,  // vmov r0, r1, d1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_ui2d", {
+        0xee000a10,  // vmov s0, r0
+        0xeeb81b40,  // vcvt.f64.u32 d1, s0
+        0xec510b11,  // vmov r0, r1, d1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_idiv", {
+        0xe710f110,  // sdiv r0, r0, r1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_uidiv", {
+        0xe730f110,  // udiv r0, r0, r1
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_idivmod", {
+        0xe712f110,  // sdiv r2, r0, r1
+        0xe0610192,  // mls r1, r2, r1, r0
+        0xe1a00002,  // mov r0, r2
+        0xe12fff1e,  // bx lr
+    }},
+    {"__aeabi_uidivmod", {
+        0xe732f110,  // udiv r2, r0, r1
+        0xe0610192,  // mls r1, r2, r1, r0
+        0xe1a00002,  // mov r0, r2
+        0xe12fff1e,  // bx lr
+    }},
+};
+}  // namespace
+
+// Self-check (adb shell setprop debug.ddport.selftest 1): run each original libgcc routine on edge
+// cases, hook it, run again and compare bit for bit (NaN payloads excepted). Logs mismatches.
+namespace {
+// argument kind of each helper: f float, d double, i int32, l int64; result width in words
+struct Sig { const char* args; int ret_words; bool float_ret; };
+Sig sig_of(const char* n) {
+    std::string s = n + 8;  // after "__aeabi_"
+    if (s == "f2d") return {"f", 2, true};
+    if (s == "d2f") return {"d", 1, true};
+    if (s.rfind("fcmp", 0) == 0) return {"ff", 1, false};
+    if (s.rfind("dcmp", 0) == 0) return {"dd", 1, false};
+    if (s == "f2iz" || s == "f2uiz") return {"f", 1, false};
+    if (s == "d2iz" || s == "d2uiz") return {"d", 1, false};
+    if (s == "i2f" || s == "ui2f") return {"i", 1, true};
+    if (s == "l2f" || s == "ul2f") return {"l", 1, true};
+    if (s == "i2d" || s == "ui2d") return {"i", 2, true};
+    if (s == "l2d" || s == "ul2d") return {"l", 2, true};
+    if (s[0] == 'f') return {"ff", 1, true};
+    if (s[0] == 'd' && s != "drsub") return {"dd", 2, true};
+    if (s == "drsub") return {"dd", 2, true};
+    if (s.find("ldiv") != std::string::npos) return {"ll", 2, false};
+    if (s.find("divmod") != std::string::npos) return {"ii", 2, false};
+    return {"ii", 1, false};
+}
+const double kVals[] = {0.0, -0.0, 1.0, -1.0, 0.5, 3.3, -7.25, 1e-40, 1e-310, 123456789.0, -2147483648.0,
+                        2147483647.0, 4294967296.0, 1e30, -1e300, INFINITY, -INFINITY, NAN, 16777217.0};
+const int64_t kInts[] = {0, 1, -1, 7, -7, 3, 100, INT32_MIN, INT32_MAX, 0x7fffffffffffLL, INT64_MIN, -123456789012LL};
+void push(std::vector<u32>& w, char kind, int i) {
+    if (kind == 'f') { w.push_back(bits(float(kVals[i % 19]))); return; }
+    if (kind == 'i') { w.push_back(u32(kInts[i % 12])); return; }
+    u64 v = kind == 'd' ? bits(kVals[i % 19]) : u64(kInts[i % 12]);
+    if (w.size() & 1) w.push_back(0);
+    w.push_back(u32(v)); w.push_back(u32(v >> 32));
+}
+}  // namespace
+
+void init_softfp(const GuestLib& lib) {
+    char v[PROP_VALUE_MAX] = "";
+    __system_property_get("debug.ddport.selftest", v);
+    bool test = v[0] == '1';
+    std::vector<std::pair<const char*, const VfpStub*>> todo;
+    size_t words = 0;
+    for (auto& st : kVfpStubs) todo.push_back({st.name, &st}), words += st.code.size();
+    for (auto& [name, h] : kSoftFp) todo.push_back({name, nullptr});
+    u32 next = mem::g(mem::alloc_aligned(16, words * 4));  // right after the library: in B range
+
+    int n = 0, cases = 0, bad = 0;
+    for (auto& [name, st] : todo) {
+        u32 a = lib.sym(name);
+        if (!a) continue;
+        std::vector<std::vector<u32>> inputs;
+        std::vector<u64> want;
+        Sig sg = sig_of(name);
+        if (test) {
+            int na = strlen(sg.args), lim = sg.args[0] == 'i' || sg.args[0] == 'l' ? 12 : 19;
+            for (int i = 0; i < lim; i++)
+                for (int j = 0; j < (na == 2 ? lim : 1); j++) {
+                    std::vector<u32> w;
+                    push(w, sg.args[0], i);
+                    if (na == 2) push(w, sg.args[1], j);
+                    inputs.push_back(w);
+                    want.push_back(call_guest(a, w.data(), w.size()));
+                }
+        }
+        if (st) {
+            memcpy(mem::h(next), st->code.data(), st->code.size() * 4);
+            int64_t off = int64_t(next) - (int64_t(a) + 8);
+            if (off >= (1 << 25) || off < -(1 << 25)) fatal("%s: stub out of branch range", name);
+            mem::wr32(a, 0xEA000000 | ((u32(off) >> 2) & 0xFFFFFF));  // b stub
+            next += st->code.size() * 4;
+        } else {
+            for (auto& [hn, h] : kSoftFp)
+                if (!strcmp(hn, name)) hook_guest(a, h, name);
+        }
+        invalidate_guest_code(a, 4);
+        n++;
+        for (size_t k = 0; k < inputs.size(); k++) {
+            u64 got = call_guest(a, inputs[k].data(), inputs[k].size()), exp = want[k];
+            if (sg.ret_words == 1) { got = u32(got); exp = u32(exp); }
+            bool both_nan = sg.float_ret && (sg.ret_words == 1 ? std::isnan(f32(u32(got))) && std::isnan(f32(u32(exp)))
+                                                               : std::isnan(f64(u32(got), u32(got >> 32))) &&
+                                                                     std::isnan(f64(u32(exp), u32(exp >> 32))));
+            cases++;
+            if (got != exp && !both_nan) {
+                if (bad++ < 40)
+                    LOGW("selftest %s(%08x %08x %08x %08x): libgcc %016llx, native %016llx", name, inputs[k][0],
+                         inputs[k].size() > 1 ? inputs[k][1] : 0, inputs[k].size() > 2 ? inputs[k][2] : 0,
+                         inputs[k].size() > 3 ? inputs[k][3] : 0, (unsigned long long)exp, (unsigned long long)got);
+            }
+        }
+    }
+    LOGI("replaced %d soft-float/division helpers", n);
+    if (test) LOGI("selftest: %d cases, %d mismatches", cases, bad);
 }

@@ -48,6 +48,7 @@ struct GuestLib {
     u32 base = 0, exidx = 0, exidx_count = 0;
     u32 symtab = 0, strtab = 0, nsyms = 0;
     u32 init_array = 0, init_count = 0;
+    u32 code_end = 0;  // end of the executable segment
     u32 sym(const char* name) const;
 };
 GuestLib load_guest(const char* path);
@@ -65,6 +66,7 @@ using Handler = void (*)(Ctx&);
 
 u32 make_thunk(Handler h, const char* name, bool reenters = false);  // guest address of an "svc #n; bx lr" stub
 void register_import(const char* name, Handler h);
+void hook_guest(u32 addr, Handler h, const char* name);
 u32 import_address(const char* name);  // 0 if nobody provides it
 void register_data(const char* name, u32 guest_addr);
 
@@ -72,12 +74,18 @@ u64 call_guest(u32 fn, const u32* args, size_t n);
 inline u64 call_guest(u32 fn, std::initializer_list<u32> args) { return call_guest(fn, args.begin(), args.size()); }
 u32 guest_errno_addr();  // per-thread errno slot in guest memory
 u32 guest_thread_id();   // 32-bit id the guest sees as pthread_t
+void invalidate_guest_code(u32 addr, u32 len);  // after patching code this thread may have run
 extern std::atomic<u64> g_svc_count;  // guest->host calls, for the perf log
+extern bool g_profile;
+void log_svc_top();
+void guest_profile_init(const GuestLib& lib);
+void log_guest_top();  // debug.ddport.profile 2: per-function instruction counts
 
 // ---------------------------------------------------------------- module init
 void init_libc();
 void init_gl();
 void init_pthread();
+void init_softfp(const GuestLib& lib);
 
 // ---------------------------------------------------------------- generic wrappers
 // Reads AAPCS (softfp) arguments in order: 32-bit words in r0-r3 then stack,

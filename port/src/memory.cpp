@@ -120,6 +120,7 @@ GuestLib load_guest(const char* path) {
     u32 dyn = 0;
     for (int i = 0; i < eh->phnum; i++) {
         if (ph[i].type == PT_LOAD_) memcpy(mem::h(lib.base + ph[i].vaddr), &file[ph[i].offset], ph[i].filesz);
+        if (ph[i].type == PT_LOAD_ && (ph[i].flags & 1)) lib.code_end = lib.base + ph[i].vaddr + ph[i].memsz;
         if (ph[i].type == PT_DYNAMIC_) dyn = lib.base + ph[i].vaddr;
         if (ph[i].type == PT_ARM_EXIDX_) { lib.exidx = lib.base + ph[i].vaddr; lib.exidx_count = ph[i].memsz / 8; }
     }

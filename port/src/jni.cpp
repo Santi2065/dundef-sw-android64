@@ -156,6 +156,8 @@ void count_frame() {
                        static_cast<unsigned long long>((svc - last_svc) / (now - prev)));
         else frames = 0;
         last_svc = svc;
+        if (g_profile) log_svc_top();
+        log_guest_top();
     }
 }
 
@@ -618,10 +620,18 @@ static void patch_hud_alignment(JNIEnv* e) {
     *site = 0x2300 | mode;  // movs r3, #mode
 }
 
+static bool guest_profiling;
+
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     g_vm = vm;
     env();
     mem::init();
+    {
+        char v[PROP_VALUE_MAX] = "";
+        __system_property_get("debug.ddport.profile", v);
+        g_profile = v[0] == '1' || v[0] == '2';
+        guest_profiling = v[0] == '2';
+    }
     init_libc();
     init_gl();
 
@@ -635,6 +645,8 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     std::string path = info.dli_fname;
     path = path.substr(0, path.rfind('/') + 1) + "libDunDefGuest.so";
     g_lib = load_guest(path.c_str());
+    init_softfp(g_lib);
+    if (guest_profiling) guest_profile_init(g_lib);
     run_guest_constructors(g_lib);
     patch_hud_alignment(env());
 

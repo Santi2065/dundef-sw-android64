@@ -58,6 +58,12 @@ Mali and PowerVR GPUs are untested; reports are welcome.
 - **JNI both ways**: the guest gets a fake `JavaVM`/`JNIEnv` living in guest memory, with Java
   objects and IDs as 32-bit handles. Java calls the guest's 18 native methods through host
   trampolines registered with ART.
+- **Soft-float replaced**: the library was built without an FPU, so every float/double operation
+  and every integer division (ARMv5 has no divide) was a call into libgcc routines running as
+  dozens of emulated instructions; the game makes ~17 million of them per second. Each routine's
+  first instruction is patched into a branch to a few ARM VFP/IDIV instructions that dynarmic
+  compiles straight to host float/divide instructions (+48% uncapped fps in the tavern). A
+  self-test checks them bit for bit against the original libgcc code.
 - **Config tweak**: when the engine opens `Coalesced_*.bin` it gets a copy with
   `MaxSmoothedFrameRate` raised from 62 to 145.
 
@@ -166,6 +172,9 @@ Uninstalling the app deletes both.
 adb logcat -s ddport                        # loader messages + a "perf:" fps line every 5 s
 adb shell setprop debug.ddport.novsync 1    # disable vsync to measure uncapped fps
 adb shell setprop debug.ddport.hudalign 0   # wide-phone HUD: 0 = left (stock), 1 = centered (default), 2 = right
+adb shell setprop debug.ddport.selftest 1   # compare the float/division replacements with libgcc at startup
+adb shell setprop debug.ddport.profile 1    # log the most-called imports every 5 s
+adb shell setprop debug.ddport.profile 2    # also count guest instructions per function (slow)
 ```
 
 ## Legal
