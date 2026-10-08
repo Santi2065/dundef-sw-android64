@@ -6,3 +6,4 @@
 build/
 port/build-*/
 port/third_party/boost_*/
+tools/

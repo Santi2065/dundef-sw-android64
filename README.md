@@ -6,7 +6,7 @@ code at all**: Snapdragon 8 Elite, Dimensity 9300, Google Tensor G2 and newer, a
 
 > [!IMPORTANT]
 > **This repository contains no game code or assets.** You need your own copy of the original
-> APK. `build.sh` patches it on your machine and produces a new APK you can sideload.
+> APK. `build.py` patches it on your machine and produces a new APK you can sideload.
 
 <p align="center">
   <img src="docs/media/main-menu.jpg" alt="Dungeon Defenders: Second Wave main menu at full resolution on a 64-bit-only Android device" width="820">
@@ -89,13 +89,13 @@ Mali and PowerVR GPUs are untested; reports are welcome.
 - **Config tweak**: when the engine opens `Coalesced_*.bin` it gets a copy with
   `MaxSmoothedFrameRate` raised from 62 to 145.
 
-The Java/smali patches are applied by `build.sh` with plain `sed`/`perl`. Each is commented
-and checked.
+The Java/smali patches are applied by `build.py` with regular expressions (each one is commented
+and must match, or the build stops); whole replacement files live in `patches/`.
 
 ## Step by step
 
-Building runs on **Linux** (tested on Fedora). It should also work under WSL2 on Windows, but
-that is untested. macOS is not supported (the script uses GNU `sed`).
+Works on **Windows, macOS and Linux**. You only need **Java** and **Python**: everything else is
+downloaded and checksum-verified on first run.
 
 ### 1. Get your copy of the APK
 
@@ -109,56 +109,49 @@ adb pull /data/app/com.trendy.ddapp-1.apk com.trendy-7.6.apk   # use the path pr
 
 A backup made with a backup app or file manager works too. The patches were written for
 version 7.6, SHA-256 `821d019fd43bcc71befcc2a91da31809f375b8ec811155f3540abab2c27ea1b6`.
-`build.sh` warns if yours differs and carries on anyway.
+`build.py` warns if yours differs and carries on anyway.
 
-### 2. Install the tools (once)
+### 2. Install Java and Python (once)
 
-```bash
-# Debian / Ubuntu
-sudo apt install openjdk-17-jdk git curl perl cmake ninja-build unzip
-# Fedora
-sudo dnf install java-17-openjdk-devel git curl perl cmake ninja-build unzip
-```
-
-**Android SDK build-tools and NDK r28.** If you don't use Android Studio, download the
-"Command line tools only" zip from <https://developer.android.com/studio#command-line-tools-only>, then:
-
-```bash
-mkdir -p ~/Android/Sdk/cmdline-tools
-unzip commandlinetools-linux-*_latest.zip -d ~/Android/Sdk/cmdline-tools
-mv ~/Android/Sdk/cmdline-tools/cmdline-tools ~/Android/Sdk/cmdline-tools/latest
-yes | ~/Android/Sdk/cmdline-tools/latest/bin/sdkmanager --licenses
-~/Android/Sdk/cmdline-tools/latest/bin/sdkmanager "build-tools;35.0.0" "ndk;28.2.13676358" "platform-tools"
-```
-
-**apktool** (<https://apktool.org>), installed into `~/.local/bin`, which must be in your `PATH`:
-
-```bash
-mkdir -p ~/.local/bin
-curl -Lo ~/.local/bin/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apktool_2.12.1.jar
-printf '#!/bin/sh\nexec java -jar "$(dirname "$0")/apktool.jar" "$@"\n' > ~/.local/bin/apktool
-chmod +x ~/.local/bin/apktool
-```
+| | Java 17 or newer | Python 3.8 or newer |
+|---|---|---|
+| **Windows** | [Temurin JDK](https://adoptium.net) (tick "Add to PATH" in the installer) | [python.org](https://www.python.org/downloads/) (tick "Add python.exe to PATH") |
+| **macOS** | [Temurin JDK](https://adoptium.net) or `brew install --cask temurin` | preinstalled on recent versions, or `brew install python` |
+| **Linux** | `sudo apt install openjdk-17-jdk` / `sudo dnf install java-17-openjdk` | preinstalled |
 
 ### 3. Build
 
-Clone with `git`. GitHub's "Download ZIP" leaves out the dynarmic submodule and the build fails.
+Download this repository (green **Code** button → **Download ZIP**, then unzip it, or `git clone`),
+open a terminal in its folder and run:
 
 ```bash
-git clone https://github.com/Santi2065/dundef-sw-android64
-cd dundef-sw-android64
-./build.sh /path/to/com.trendy-7.6.apk
+python build.py path/to/com.trendy-7.6.apk
 ```
 
-The first build downloads dynarmic and the Boost headers (about 150 MB) and takes a few minutes.
-Later builds take seconds. The result is **`DunDefSW-64.apk`**.
+On Windows use `py` instead of `python` if `python` is not found; on macOS and Linux it may be
+`python3`. The first run downloads apktool, the APK signer and the 64-bit loader (about 25 MB).
+The result is **`DunDefSW-64.apk`**.
 
 The first build also creates `dundef.keystore`, the key the APK is signed with. **Keep it.**
 Android only installs an update over the existing app if it is signed with the same key. With a
 different key you would have to uninstall first, which deletes the game data and your saves.
 
-Options: `ABIS="arm64-v8a x86_64"` also builds for x86_64 emulators. Set `ANDROID_HOME=`, `NDK=`
-or `BUILD_TOOLS=` if your SDK is not under `~/Android/Sdk`.
+Option: `--abis arm64-v8a,x86_64` also includes x86_64, for the Android emulator.
+
+<details>
+<summary>Building the loader from source instead of downloading it</summary>
+
+The loader (`port/`) is published prebuilt in this repository's
+[releases](https://github.com/Santi2065/dundef-sw-android64/releases); `build.py` checks its
+SHA-256. To build it yourself, clone with `git` (it fetches dynarmic as a submodule), install
+`cmake`, `ninja` and the Android NDK r28 (`sdkmanager "ndk;28.2.13676358"`), then:
+
+```bash
+python build.py path/to/com.trendy-7.6.apk --from-source
+```
+
+Set `NDK=/path/to/ndk` or `ANDROID_HOME` if the NDK is not in the default SDK location.
+</details>
 
 ### 4. Install on your device
 
@@ -213,4 +206,6 @@ in them belongs to its owners.
 - [dynarmic](https://github.com/azahar-emu/dynarmic): ARM JIT (0BSD), git submodule
 - [dlmalloc](https://gee.cs.oswego.edu/dl/html/malloc.html) by Doug Lea (MIT-0), bundled in `port/third_party/dlmalloc`
 - [Boost](https://www.boost.org) headers (BSL-1.0), downloaded at build time
-- [apktool](https://apktool.org) (Apache-2.0), used to decode and rebuild the APK
+- [apktool](https://apktool.org) (Apache-2.0), downloaded at build time to decode and rebuild the APK
+- [uber-apk-signer](https://github.com/patrickfav/uber-apk-signer) (Apache-2.0), downloaded at build time to align and sign it
+- Licenses of the components compiled into the prebuilt loader: [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
