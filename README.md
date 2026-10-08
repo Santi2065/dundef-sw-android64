@@ -20,7 +20,7 @@ code at all**: Snapdragon 8 Elite, Dimensity 9300, Google Tensor G2 and newer, a
     <td align="center"><img src="docs/media/deeper-well.jpg" alt="Build phase in The Deeper Well, with the Apprentice's tower list" width="400"><br><em>The Deeper Well: build phase</em></td>
   </tr>
   <tr>
-    <td align="center"><img src="docs/media/create-hero.jpg" alt="Create Your Hero screen with the Apprentice selected and a typed name" width="400"><br><em>Hero creation (touch keyboard)</em></td>
+    <td align="center"><img src="docs/media/create-hero.jpg" alt="Create Your Hero screen with the Apprentice selected and a typed name" width="400"><br><em>Hero creation</em></td>
     <td align="center"><img src="docs/media/choose-hero.jpg" alt="Choose Your Hero screen" width="400"><br><em>Hero selection</em></td>
   </tr>
   <tr>
