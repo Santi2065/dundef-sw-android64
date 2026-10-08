@@ -4,8 +4,30 @@ Runs the original 2012 Android release of *Dungeon Defenders: Second Wave* (`com
 version 7.6) on modern Android, including **64-bit-only chips that cannot execute 32-bit ARM
 code at all**: Snapdragon 8 Elite, Dimensity 9300, Google Tensor G2 and newer, and so on.
 
-**This repository contains no game code or assets.** You need your own copy of the original
-APK. `build.sh` patches it on your machine and produces a new APK you can sideload.
+> [!IMPORTANT]
+> **This repository contains no game code or assets.** You need your own copy of the original
+> APK. `build.sh` patches it on your machine and produces a new APK you can sideload.
+
+<p align="center">
+  <img src="docs/media/main-menu.jpg" alt="Dungeon Defenders: Second Wave main menu at full resolution on a 64-bit-only Android device" width="820">
+  <br>
+  <em>The original 2012 game on a 64-bit-only Android 15 device: full native resolution, uncapped frame rate</em>
+</p>
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/media/tavern-gameplay.jpg" alt="The Apprentice in the tavern hub, with the touch HUD" width="400"><br><em>Tavern hub</em></td>
+    <td align="center"><img src="docs/media/deeper-well.jpg" alt="Build phase in The Deeper Well, with the Apprentice's tower list" width="400"><br><em>The Deeper Well: build phase</em></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/media/create-hero.jpg" alt="Create Your Hero screen with the Apprentice selected and a typed name" width="400"><br><em>Hero creation (touch keyboard)</em></td>
+    <td align="center"><img src="docs/media/choose-hero.jpg" alt="Choose Your Hero screen" width="400"><br><em>Hero selection</em></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/media/mission-select.jpg" alt="Campaign mission select with difficulty settings" width="400"><br><em>Mission select</em></td>
+    <td align="center"><img src="docs/media/pause-menu.jpg" alt="Pause menu" width="400"><br><em>Pause menu</em></td>
+  </tr>
+</table>
 
 ## Status
 
@@ -182,6 +204,8 @@ This project is not affiliated with or endorsed by Trendy Entertainment, Chromat
 NVIDIA. *Dungeon Defenders* is a trademark of its respective owner. This repository does not
 contain or distribute any of the game's code or assets: you must own a copy of the game. The
 game data is downloaded by the game itself from the mirror its original release used.
+The screenshots in `docs/media` are shown only to illustrate this project; the game's artwork
+in them belongs to its owners.
 
 ## Credits and licenses
 
