@@ -62,6 +62,7 @@ It works on Windows, macOS and Linux and needs only Java and Python.
 | The 48 px legacy icon shows up small on a white plate | Adaptive icon built from the game's own 170 px artwork |
 | On tablets (7" or more, the game's own test) the HUD only fits near 3:2: at 7:5 (e.g. OnePlus Pad 3) BUILD/HERO fall off the right edge, at 16:10 the bottom row is cut too | On tablets the window is sized to 1.48:1 and centered, with black bars top/bottom or left/right |
 | On phones wider than 16:9 (18:9 to 21:9) the phone HUD is left-aligned: BUILD/HERO and the action buttons sit mid-screen instead of at the right edge | The loader patches the engine's layout code to center the HUD; the scene stays full screen |
+| The game has a full controller layout, but only the Xperia Play's built-in gamepad could use it | Any Android controller is mapped to that layout, and the HUD switches to its gamepad version while you play with one ([Controllers](#controllers)) |
 
 ### Screenshots
 
@@ -115,6 +116,10 @@ a host implementation, which in most cases forwards it directly to the Android s
   first instruction is patched into a branch to a few ARM VFP/IDIV instructions that dynarmic
   compiles straight to host float/divide instructions (+48% uncapped fps in the tavern). A
   self-test checks them bit for bit against the original libgcc code.
+- **Controllers.** `Gamepad.java` (in `port/java/`) forwards controller input to the loader, which
+  queues buttons as the engine's `XboxTypeS_*` keys and writes the sticks to the analog axes the
+  Xperia Play build read. The Xperia-only check in `KeyPadChange` is patched out so the gamepad
+  HUD can be shown on any device.
 - **Config tweak.** When the engine opens `Coalesced_*.bin` it gets a copy with
   `MaxSmoothedFrameRate` raised from 62 to 145.
 
@@ -135,9 +140,10 @@ against a pinned SHA-256.
 | Path | Content |
 |---|---|
 | `build.py` | Cross-platform build: downloads the tools, patches the APK, signs it |
-| `port/src/` | The loader: `memory.cpp` (arena, ELF loader), `cpu.cpp` (JIT, guest threads, pthreads), `libc.cpp` and `gl.cpp` (imports, soft-float), `jni.cpp` (JNI bridge, HUD patch) |
+| `port/src/` | The loader: `memory.cpp` (arena, ELF loader), `cpu.cpp` (JIT, guest threads, pthreads), `libc.cpp` and `gl.cpp` (imports, soft-float), `jni.cpp` (JNI bridge, HUD patch), `gamepad.cpp` (controllers) |
+| `port/java/` | Java source of the controller patch, compiled to smali in `patches/` |
 | `port/third_party/` | dynarmic (git submodule) and dlmalloc |
-| `patches/` | Whole-file additions: text input fix, tablet aspect fix, adaptive icon |
+| `patches/` | Whole-file additions: text input fix, tablet aspect fix, controller input, adaptive icon |
 | `docs/media/`, `docs/figures/` | Screenshots, and the script that draws the diagrams above |
 
 ## Getting started
@@ -223,6 +229,29 @@ Uninstalling the app deletes both.
 - **PVP Arena** was an in-app purchase. Google's original billing service no longer exists,
   so it cannot be bought.
 
+### Controllers
+
+Pair any Bluetooth or USB controller (Xbox, PlayStation, 8BitDo…) and press a button: the HUD
+switches to the game's gamepad layout. Touch the screen to get the touch HUD back; that first
+touch only switches the HUD. The buttons follow the game's original layout:
+
+| Control | Action |
+|---|---|
+| Left stick | Move |
+| Right stick | Camera |
+| A | Jump; confirm in the action wheel |
+| B | Action wheel (build, hero info, pause) |
+| X / Y | Activate / alternate activate (shops, the crystal, towers) |
+| RB | Attack |
+| LT | Alternate attack |
+| D-pad | Hotkeys 1–4 (left, down, up, right) |
+| Start | Pause |
+| Back / Select | Camera zoom |
+| R3 | Minimap |
+
+PlayStation-style controllers use the same positions (Cross = A, Circle = B…). The original
+layout leaves RT, LB and L3 unused.
+
 ### Debugging
 
 ```bash
@@ -244,6 +273,7 @@ adb shell setprop debug.ddport.profile 2    # also count guest instructions per 
 | LAN co-op (host / browse) | working (hosting verified; two-device play not yet confirmed) |
 | Internet multiplayer (GameSpy) | not possible: GameSpy shut down in 2014 |
 | Uncapped frame rate | up to ~140 fps measured; 144 Hz requested on capable screens |
+| Bluetooth / USB controllers | working in game, with the game's own layout ([Controllers](#controllers)); menus stay touch-only |
 
 Tested on: Android 15 emulator, 64-bit only (x86_64 and arm64 builds), and a OnePlus Pad 3
 (Snapdragon 8 Elite, Adreno 830), where it downloads its data and runs (menus, hero creation).
@@ -253,6 +283,7 @@ Mali and PowerVR GPUs are untested; reports are welcome.
 
 - In the Options menu the "Chase Camera" label is slightly clipped on the right (cosmetic).
 - The Back button opens the game's own quit prompt (original behavior).
+- Menus (main menu, pause, shop) only respond to touch, as in the original release.
 
 ## Legal
 

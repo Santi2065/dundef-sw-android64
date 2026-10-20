@@ -86,6 +86,8 @@ void init_libc();
 void init_gl();
 void init_pthread();
 void init_softfp(const GuestLib& lib);
+struct _JNIEnv;
+void init_gamepad(_JNIEnv* env);  // gamepad.cpp
 
 // ---------------------------------------------------------------- generic wrappers
 // Reads AAPCS (softfp) arguments in order: 32-bit words in r0-r3 then stack,

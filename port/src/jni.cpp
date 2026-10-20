@@ -646,6 +646,7 @@ extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void*) {
     path = path.substr(0, path.rfind('/') + 1) + "libDunDefGuest.so";
     g_lib = load_guest(path.c_str());
     init_softfp(g_lib);
+    init_gamepad(env());
     if (guest_profiling) guest_profile_init(g_lib);
     run_guest_constructors(g_lib);
     patch_hud_alignment(env());

@@ -20,6 +20,7 @@ add_library(DunDef-Android SHARED
     src/libc.cpp
     src/gl.cpp
     src/jni.cpp
+    src/gamepad.cpp
     third_party/dlmalloc/dlmalloc.c)
 target_compile_options(DunDef-Android PRIVATE -O2 -Wall -Wno-unused-parameter)
 target_include_directories(DunDef-Android PRIVATE ${Boost_INCLUDE_DIR})  # dynarmic IR headers (profiler)

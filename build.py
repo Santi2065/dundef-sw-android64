@@ -35,11 +35,12 @@ APKTOOL = ("https://github.com/iBotPeaches/Apktool/releases/download/v2.12.1/apk
 SIGNER = ("https://github.com/patrickfav/uber-apk-signer/releases/download/v1.3.0/uber-apk-signer-1.3.0.jar",
           "e1299fd6fcf4da527dd53735b56127e8ea922a321128123b9c32d619bba1d835")
 # our loader (port/), built from this repository and attached to a GitHub release
+LOADER_TAG = "loader-v2"
 LOADER_URL = os.environ.get(
-    "DDPORT_LOADER_URL", "https://github.com/Santi2065/dundef-sw-android64/releases/download/loader-v1")
+    "DDPORT_LOADER_URL", f"https://github.com/Santi2065/dundef-sw-android64/releases/download/{LOADER_TAG}")
 LOADER_SHA256 = {
-    "arm64-v8a": "4b4909264168fe34defb8c970ad60d0c1a55b79e7e256edd64e1106b761e3627",
-    "x86_64": "ec88218e16468f701576153032cd044cdf25638e08f9c1ea7eb7428f6e4b2fd8",
+    "arm64-v8a": "1e5ae9ff3ca6d99d60a91f90a45901fc1dde97a4c8f0845414a9f9f28c6f4918",
+    "x86_64": "082a843fe85d484ab537ee4db02e49248e0fb6c4ef828905e03a06a25c0ac9dc",
 }
 
 # signing key: a fixed local keystore, so rebuilt APKs install over each other without losing saves
@@ -202,7 +203,46 @@ def patch_apk_sources(src):
     # tablet HUD fix (patches/smali/AspectFix.smali)
     insert_after(ddapp, on_create, "    invoke-static {p0}, Lcom/trendy/ddapp/AspectFix;->apply(Landroid/app/Activity;)V\n")
 
-    # whole files: text input fix, tablet aspect fix, adaptive launcher icon
+    # physical controllers (port/java/.../Gamepad.java, port/src/gamepad.cpp): route controller keys
+    # and motion to Gamepad, let a touch switch the HUD back to touch mode, and declare the two
+    # natives the loader registers. The game's own KeyPadChange(navigationHidden != YES) calls go:
+    # they were the Xperia Play slider, and the loader lifts that phone-only gate, so on other
+    # devices they would turn gamepad mode on with no controller attached.
+    patch(ddapp, r"    invoke-virtual \{p0, v0\}, Lcom/trendy/ddapp/ddapp;->KeyPadChange\(Z\)V\n", "", count=0)
+    insert_after(ddapp, r"\.method public onTouchEvent\(Landroid/view/MotionEvent;\)Z\n    \.locals 8\n\n    \.prologue\n",
+                 "    invoke-static {p0, p1}, Lcom/trendy/ddapp/Gamepad;->onTouch(Lcom/trendy/ddapp/ddapp;Landroid/view/MotionEvent;)Z\n"
+                 "    move-result v0\n    if-eqz v0, :ddport_touch\n    return v0\n    :ddport_touch\n")
+    write(ddapp, read(ddapp) + """
+.method public native ddportPadKey(IZ)V
+.end method
+
+.method public native ddportPadAxis(IFF)V
+.end method
+
+.method public dispatchKeyEvent(Landroid/view/KeyEvent;)Z
+    .locals 1
+    invoke-static {p0, p1}, Lcom/trendy/ddapp/Gamepad;->onKey(Lcom/trendy/ddapp/ddapp;Landroid/view/KeyEvent;)Z
+    move-result v0
+    if-nez v0, :handled
+    invoke-super {p0, p1}, Landroid/app/Activity;->dispatchKeyEvent(Landroid/view/KeyEvent;)Z
+    move-result v0
+    :handled
+    return v0
+.end method
+
+.method public dispatchGenericMotionEvent(Landroid/view/MotionEvent;)Z
+    .locals 1
+    invoke-static {p0, p1}, Lcom/trendy/ddapp/Gamepad;->onMotion(Lcom/trendy/ddapp/ddapp;Landroid/view/MotionEvent;)Z
+    move-result v0
+    if-nez v0, :handled
+    invoke-super {p0, p1}, Landroid/app/Activity;->dispatchGenericMotionEvent(Landroid/view/MotionEvent;)Z
+    move-result v0
+    :handled
+    return v0
+.end method
+""")
+
+    # whole files: text input fix, tablet aspect fix, gamepad support, adaptive launcher icon
     for f in (ROOT / "patches").rglob("*"):
         if f.is_file():
             dest = src / f.relative_to(ROOT / "patches")
@@ -260,7 +300,7 @@ def prebuilt_loader(abi):
     if abi not in LOADER_SHA256:
         die(f"no prebuilt loader for {abi} (use --from-source)")
     return download(f"{LOADER_URL}/libDunDef-Android-{abi}.so",
-                    TOOLS / "loader-v1" / f"libDunDef-Android-{abi}.so", LOADER_SHA256[abi])
+                    TOOLS / LOADER_TAG / f"libDunDef-Android-{abi}.so", LOADER_SHA256[abi])
 
 
 # ---------------------------------------------------------------- main
